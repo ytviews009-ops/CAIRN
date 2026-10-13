@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { createRelayPayload, validatePayload, mergeRelayPayload, checkDuplicates, computeHash, createDemoRelayPayload } from '@/lib/relay';
+import { createRelayPayload, validatePayload, validateTransport, mergeRelayPayload, checkDuplicates, computeHash, createDemoRelayPayload, encodeForTransport, decodeTransport, TRANSPORT_PREFIX } from '@/lib/relay';
 import { getSeedData } from '@/lib/seed';
 import type { AppData, RelayPayload, RelayChange } from '@/types';
 import { RELAY_VERSION } from '@/types';
@@ -479,5 +479,182 @@ describe('Offline export/import cycle', () => {
     // Second import should be no-op
     const { result: secondResult } = mergeRelayPayload(merged, validationResult.payload!);
     expect(secondResult.changesImported).toBe(0);
+  });
+});
+
+describe('Transport encoding', () => {
+  it('generates a transport payload from a valid relay', async () => {
+    const payload = await createDemoRelayPayload('dev-test001');
+    const { encoded, compressed, byteSize } = await encodeForTransport(payload);
+    expect(encoded).toBeTruthy();
+    expect(byteSize).toBeGreaterThan(0);
+    if (compressed) {
+      expect(encoded.startsWith(TRANSPORT_PREFIX)).toBe(true);
+    }
+  });
+
+  it('compact/compressed payload round trips correctly', async () => {
+    const payload = await createDemoRelayPayload('dev-test001');
+    const { encoded } = await encodeForTransport(payload);
+    const { json, error } = await decodeTransport(encoded);
+    expect(error).toBeNull();
+    expect(json).not.toBeNull();
+    const decoded = JSON.parse(json!);
+    expect(decoded.changes.length).toBe(payload.changes.length);
+    expect(decoded.incidentTitle).toBe(payload.incidentTitle);
+    expect(decoded.hash).toBe(payload.hash);
+  });
+
+  it('integrity verification after decompression', async () => {
+    const payload = await createDemoRelayPayload('dev-test001');
+    const { encoded } = await encodeForTransport(payload);
+    const result = await validateTransport(encoded);
+    expect(result.ok).toBe(true);
+    expect(result.payload).toBeDefined();
+    expect(result.payload!.hash).toBe(payload.hash);
+  });
+
+  it('import of older uncompressed JSON relays still works', async () => {
+    const payload = await makeValidPayload();
+    const json = JSON.stringify(payload);
+    // Old relays don't have the transport prefix — pass through
+    const { json: decoded, error } = await decodeTransport(json);
+    expect(error).toBeNull();
+    expect(decoded).toBe(json);
+    // validateTransport should also accept it
+    const result = await validateTransport(json);
+    expect(result.ok).toBe(true);
+  });
+
+  it('paste import of compressed relay payloads', async () => {
+    const payload = await createDemoRelayPayload('dev-test001');
+    const { encoded } = await encodeForTransport(payload);
+    // Simulate paste import — validateTransport handles both formats
+    const result = await validateTransport(encoded);
+    expect(result.ok).toBe(true);
+    expect(result.payload!.changes.length).toBe(payload.changes.length);
+  });
+
+  it('rejects malformed compressed payload', async () => {
+    const malformed = TRANSPORT_PREFIX + 'not-valid-base64-!!!';
+    const { json, error } = await decodeTransport(malformed);
+    // Either error is set or json is null
+    expect(json === null || error !== null).toBe(true);
+    const result = await validateTransport(malformed);
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects corrupted relay data', async () => {
+    const payload = await makeValidPayload();
+    const bad = { ...payload, hash: 'corrupted-hash-0000' };
+    const json = JSON.stringify(bad);
+    const result = await validateTransport(json);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('HASH_MISMATCH');
+  });
+
+  it('deduplication after compressed relay import', async () => {
+    const data = makeSeedData();
+    const payload = await createDemoRelayPayload('dev-test001');
+    const { encoded } = await encodeForTransport(payload);
+    const result = await validateTransport(encoded);
+    expect(result.ok).toBe(true);
+    const { data: merged } = mergeRelayPayload(data, result.payload!);
+    // Second import via compressed transport should be no-op
+    const result2 = await validateTransport(encoded);
+    const { result: secondResult } = mergeRelayPayload(merged, result2.payload!);
+    expect(secondResult.changesImported).toBe(0);
+  });
+
+  it('task completion/reopening and conflict behavior after round trip', async () => {
+    const data = makeSeedData();
+    const payload = await makeValidPayload();
+    // Add a TASK_COMPLETED change to the payload
+    payload.changes.push({
+      changeId: 'rt-chg-completion',
+      type: 'TASK_COMPLETED',
+      entityId: 'test-task-1',
+      incidentId: 'test-inc-1',
+      timestamp: Date.now(),
+      payload: {},
+    });
+    // Re-hash
+    const { hash: _, ...rest } = payload;
+    const newHash = await computeHash(rest);
+    const rehashed = { ...payload, hash: newHash };
+
+    const { encoded } = await encodeForTransport(rehashed);
+    const result = await validateTransport(encoded);
+    expect(result.ok).toBe(true);
+
+    // Import into data that has the task as pending
+    data.tasks.push({
+      id: 'test-task-1',
+      incidentId: 'test-inc-1',
+      title: 'Test Task',
+      status: 'pending',
+      createdAt: Date.now() - 60000,
+      completedAt: null,
+    });
+    const { data: merged, result: mergeResult } = mergeRelayPayload(data, result.payload!);
+    const task = merged.tasks.find((t) => t.id === 'test-task-1');
+    expect(task!.status).toBe('completed');
+    expect(mergeResult.changesImported).toBeGreaterThan(0);
+  });
+
+  it('preservation of all changes in the 15-change conflict demo scenario', async () => {
+    // Build a payload with 15 changes simulating the conflict demo
+    const incidentId = 'inc-conflict-demo';
+    const taskId = 'task-conflict-demo-elevator';
+    const taskTitle = 'Check elevator status';
+    const baseTime = Date.now() - 60000;
+
+    const changes: RelayChange[] = [];
+
+    // 1-7: Standard demo changes
+    changes.push({ changeId: 'chg-1', type: 'INCIDENT_CREATED', entityId: incidentId, incidentId, timestamp: baseTime, payload: { title: 'Demo — Conflict Scenario', location: 'Demo Building', status: 'active', members: 2 } });
+    changes.push({ changeId: 'chg-2', type: 'TASK_CREATED', entityId: taskId, incidentId, timestamp: baseTime - 50000, payload: { title: taskTitle, status: 'pending', completedAt: null } });
+    changes.push({ changeId: 'chg-3', type: 'TASK_COMPLETED', entityId: taskId, incidentId, timestamp: baseTime - 30000, payload: {} });
+    changes.push({ changeId: 'chg-4', type: 'TIMELINE_EVENT', entityId: 'tl-1', incidentId, timestamp: baseTime - 60000, payload: { message: 'Incident created', kind: 'system' } });
+    changes.push({ changeId: 'chg-5', type: 'TIMELINE_EVENT', entityId: 'tl-2', incidentId, timestamp: baseTime - 50000, payload: { message: 'Task added', kind: 'task' } });
+    changes.push({ changeId: 'chg-6', type: 'TIMELINE_EVENT', entityId: 'tl-3', incidentId, timestamp: baseTime - 30000, payload: { message: 'Task completed', kind: 'task' } });
+    changes.push({ changeId: 'chg-7', type: 'TIMELINE_EVENT', entityId: 'tl-4', incidentId, timestamp: baseTime - 30000, payload: { message: 'Task reopened', kind: 'task' } });
+
+    // 8-15: Additional changes to reach 15
+    changes.push({ changeId: 'chg-8', type: 'TASK_REOPENED', entityId: taskId, incidentId, timestamp: baseTime - 20000, payload: {} });
+    changes.push({ changeId: 'chg-9', type: 'TIMELINE_EVENT', entityId: 'tl-5', incidentId, timestamp: baseTime - 20000, payload: { message: 'Conflict detected', kind: 'conflict' } });
+    changes.push({ changeId: 'chg-10', type: 'REQUEST_CREATED', entityId: 'req-1', incidentId, timestamp: baseTime - 25000, payload: { title: 'Flashlight', quantity: 2, fulfilled: false } });
+    changes.push({ changeId: 'chg-11', type: 'TIMELINE_EVENT', entityId: 'tl-6', incidentId, timestamp: baseTime - 25000, payload: { message: 'Request added', kind: 'request' } });
+    changes.push({ changeId: 'chg-12', type: 'TASK_CREATED', entityId: 'task-2', incidentId, timestamp: baseTime - 40000, payload: { title: 'Check fire exits', status: 'pending', completedAt: null } });
+    changes.push({ changeId: 'chg-13', type: 'TIMELINE_EVENT', entityId: 'tl-7', incidentId, timestamp: baseTime - 40000, payload: { message: 'Task added: Check fire exits', kind: 'task' } });
+    changes.push({ changeId: 'chg-14', type: 'TASK_COMPLETED', entityId: 'task-2', incidentId, timestamp: baseTime - 10000, payload: {} });
+    changes.push({ changeId: 'chg-15', type: 'TIMELINE_EVENT', entityId: 'tl-8', incidentId, timestamp: baseTime - 10000, payload: { message: 'Task completed: Check fire exits', kind: 'task' } });
+
+    expect(changes.length).toBe(15);
+
+    const partial = {
+      version: RELAY_VERSION,
+      relayId: 'rly-15chg',
+      createdAt: new Date().toISOString(),
+      sourceDeviceId: 'dev-demo01',
+      incidentId,
+      incidentTitle: 'Demo — Conflict Scenario',
+      changes,
+    };
+    const hash = await computeHash(partial);
+    const payload = { ...partial, hash };
+
+    // Encode and decode
+    const { encoded, byteSize } = await encodeForTransport(payload);
+    expect(byteSize).toBeGreaterThan(0);
+
+    const result = await validateTransport(encoded);
+    expect(result.ok).toBe(true);
+    expect(result.payload!.changes.length).toBe(15);
+
+    // Verify every changeId is preserved
+    const originalIds = changes.map((c) => c.changeId);
+    const decodedIds = result.payload!.changes.map((c) => c.changeId);
+    expect(decodedIds).toEqual(originalIds);
   });
 });

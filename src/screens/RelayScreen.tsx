@@ -7,6 +7,8 @@ import { Button } from '@/components/Button';
 import {
   createRelayPayload,
   validatePayload,
+  validateTransport,
+  encodeForTransport,
   createDemoRelayPayload,
   type ValidationResult,
   type ValidationError,
@@ -31,6 +33,7 @@ export function RelayScreen() {
   const [view, setView] = useState<RelayView>(relayInitialMode === 'scan' ? 'scan' : 'generate');
   const [payload, setPayload] = useState<RelayPayload | null>(null);
   const [payloadJson, setPayloadJson] = useState<string>('');
+  const [transportEncoded, setTransportEncoded] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [validationError, setValidationError] = useState<ValidationError | null>(null);
@@ -49,6 +52,8 @@ export function RelayScreen() {
     if (p) {
       setPayload(p);
       setPayloadJson(JSON.stringify(p));
+      const { encoded } = await encodeForTransport(p);
+      setTransportEncoded(encoded);
     }
     setLoading(false);
   }, [data, incident, deviceId]);
@@ -61,7 +66,7 @@ export function RelayScreen() {
   const handleScan = useCallback(async (raw: string) => {
     setScanError(null);
     setValidationError(null);
-    const result: ValidationResult = await validatePayload(raw);
+    const result: ValidationResult = await validateTransport(raw);
     if (!result.ok || !result.payload) {
       setValidationError(result.error ?? 'INVALID_JSON');
       setView('error');
@@ -145,7 +150,7 @@ export function RelayScreen() {
                   <div className="w-8 h-8 rounded-full border-2 border-gray-200 border-t-gray-900 animate-spin" />
                 </div>
               ) : (
-                <QRCodeImage value={payloadJson} size={280} />
+                <QRCodeImage value={transportEncoded} size={280} />
               )}
             </div>
           </div>

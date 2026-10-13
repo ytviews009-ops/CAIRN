@@ -51,6 +51,131 @@ export async function computeHash(payload: Omit<RelayPayload, 'hash'>): Promise<
   return arr.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// ─── Transport encoding (compressed QR) ──────────────────────────────
+
+export const TRANSPORT_PREFIX = 'CAIRN:GZ1:';
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function hasCompressionStream(): boolean {
+  return typeof CompressionStream !== 'undefined';
+}
+
+export async function encodeForTransport(payload: RelayPayload): Promise<{ encoded: string; compressed: boolean; byteSize: number }> {
+  const json = JSON.stringify(payload);
+  const rawBytes = new TextEncoder().encode(json);
+
+  if (!hasCompressionStream()) {
+    return { encoded: json, compressed: false, byteSize: rawBytes.length };
+  }
+
+  try {
+    const cs = new CompressionStream('gzip');
+    const writer = cs.writable.getWriter();
+    writer.write(rawBytes);
+    writer.close();
+
+    const reader = cs.readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLen = 0;
+    // Read all chunks
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        totalLen += value.length;
+      }
+    }
+
+    const compressed = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const chunk of chunks) {
+      compressed.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const b64 = bytesToBase64(compressed);
+    const encoded = TRANSPORT_PREFIX + b64;
+    return { encoded, compressed: true, byteSize: encoded.length };
+  } catch {
+    return { encoded: json, compressed: false, byteSize: rawBytes.length };
+  }
+}
+
+export async function decodeTransport(raw: string): Promise<{ json: string | null; error: ValidationError | null }> {
+  if (!raw || !raw.trim()) return { json: null, error: 'EMPTY_PAYLOAD' };
+
+  // Old uncompressed JSON — pass through
+  if (!raw.startsWith(TRANSPORT_PREFIX)) {
+    return { json: raw, error: null };
+  }
+
+  const b64 = raw.slice(TRANSPORT_PREFIX.length);
+  if (!b64) return { json: null, error: 'INVALID_JSON' };
+
+  if (!hasCompressionStream()) {
+    return { json: null, error: 'INVALID_JSON' };
+  }
+
+  try {
+    const compressed = base64ToBytes(b64);
+    const ds = new DecompressionStream('gzip');
+    const writer = ds.writable.getWriter();
+    writer.write(compressed);
+    writer.close();
+
+    const reader = ds.readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalLen = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        totalLen += value.length;
+      }
+    }
+
+    const decompressed = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const chunk of chunks) {
+      decompressed.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const json = new TextDecoder().decode(decompressed);
+    return { json, error: null };
+  } catch {
+    return { json: null, error: 'INVALID_JSON' };
+  }
+}
+
+// ─── Unified transport-aware validation ──────────────────────────────
+
+export async function validateTransport(raw: string): Promise<ValidationResult> {
+  const { json, error } = await decodeTransport(raw);
+  if (error || !json) {
+    return { ok: false, error: error ?? 'INVALID_JSON' };
+  }
+  return validatePayload(json);
+}
+
 // ─── Payload creation ───────────────────────────────────────────────
 
 export async function createRelayPayload(
