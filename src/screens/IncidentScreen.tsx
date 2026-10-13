@@ -4,6 +4,7 @@ import { useApp } from '@/context/AppContext';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Button } from '@/components/Button';
 import { Modal } from '@/components/Modal';
+import { IncidentBriefPanel } from '@/components/IncidentBriefPanel';
 
 function timeAgo(ts: number): string {
   const diff = Date.now() - ts;
@@ -111,6 +112,11 @@ export function IncidentScreen() {
               {unresolvedConflictCount} conflict{unresolvedConflictCount !== 1 ? 's' : ''} need{unresolvedConflictCount === 1 ? 's' : ''} review
             </button>
           )}
+        </div>
+
+        {/* AI Incident Brief */}
+        <div className="mb-8">
+          <IncidentBriefPanel incidentId={incident.id} incidentTitle={incident.title} />
         </div>
 
         {/* Tasks */}

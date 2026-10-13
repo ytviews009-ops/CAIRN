@@ -1,0 +1,2 @@
+[functions.incident-brief]
+verify_jwt = true
