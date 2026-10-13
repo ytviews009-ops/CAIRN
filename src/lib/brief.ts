@@ -245,15 +245,18 @@ export type BriefErrorCode =
   | 'server_not_configured'
   | 'service_unavailable'
   | 'rate_limited'
+  | 'quota_exhausted'
   | 'invalid_response'
   | 'request_too_large'
   | 'network_error';
 
 export class BriefError extends Error {
   code: BriefErrorCode;
-  constructor(code: BriefErrorCode, message: string) {
+  retryAfter?: number | null;
+  constructor(code: BriefErrorCode, message: string, retryAfter?: number | null) {
     super(message);
     this.code = code;
+    this.retryAfter = retryAfter ?? null;
     this.name = 'BriefError';
   }
 }
@@ -293,7 +296,15 @@ export async function fetchAIBrief(input: IncidentBriefInput): Promise<IncidentB
     clearTimeout(timeoutId);
 
     if (response.status === 429) {
-      throw new BriefError('rate_limited', 'Rate limit reached. Please try again in a moment.');
+      const errBody = await response.json().catch(() => ({}));
+      const retryAfter = typeof errBody.retryAfter === 'number' ? errBody.retryAfter : null;
+      const msg = retryAfter
+        ? `Rate limit reached. Please try again in ${retryAfter} seconds.`
+        : 'Rate limit reached. Please try again in a moment.';
+      throw new BriefError('rate_limited', msg, retryAfter);
+    }
+    if (response.status === 402) {
+      throw new BriefError('quota_exhausted', 'AI service quota or billing limit reached. Please check your OpenAI account credits and billing settings.');
     }
     if (response.status === 503) {
       throw new BriefError('service_unavailable', 'AI service is temporarily unavailable.');

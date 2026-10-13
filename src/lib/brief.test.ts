@@ -4,12 +4,14 @@ import {
   validateBrief,
   generateLocalBrief,
   formatBriefForClipboard,
+  BriefError,
   MAX_TASKS,
   MAX_REQUESTS,
   MAX_TIMELINE,
   MAX_FIELD_LENGTH,
   type IncidentBriefInput,
   type IncidentBrief,
+  type BriefErrorCode,
 } from '@/lib/brief';
 import { getSeedData } from '@/lib/seed';
 import type { AppData } from '@/types';
@@ -320,6 +322,65 @@ describe('Brief data preparation', () => {
       };
       const text = formatBriefForClipboard(brief, 'Test');
       expect(text).toContain('Local (on-device)');
+    });
+  });
+
+  // ─── Error categorization (client-side) ────────────────────────────
+
+  describe('Error handling', () => {
+    it('BriefError carries retryAfter for rate_limited', () => {
+      const err = new BriefError('rate_limited', 'Rate limit reached. Please try again in 30 seconds.', 30);
+      expect(err.code).toBe('rate_limited');
+      expect(err.retryAfter).toBe(30);
+      expect(err.message).toContain('30 seconds');
+    });
+
+    it('BriefError for quota_exhausted has billing message', () => {
+      const err = new BriefError('quota_exhausted', 'AI service quota or billing limit reached.');
+      expect(err.code).toBe('quota_exhausted');
+      expect(err.retryAfter).toBeNull();
+      expect(err.message).toContain('quota');
+    });
+
+    it('BriefError for server_not_configured has setup message', () => {
+      const err = new BriefError('server_not_configured', 'AI service is not configured.');
+      expect(err.code).toBe('server_not_configured');
+      expect(err.message).toContain('not configured');
+    });
+
+    it('BriefError for service_unavailable has generic message', () => {
+      const err = new BriefError('service_unavailable', 'AI service is temporarily unavailable.');
+      expect(err.code).toBe('service_unavailable');
+      expect(err.message).toContain('unavailable');
+    });
+
+    it('BriefError for rate_limited without retryAfter', () => {
+      const err = new BriefError('rate_limited', 'Rate limit reached.');
+      expect(err.code).toBe('rate_limited');
+      expect(err.retryAfter).toBeNull();
+    });
+
+    it('quota_exhausted is distinct from rate_limited', () => {
+      const quotaErr = new BriefError('quota_exhausted', 'Quota exhausted');
+      const rateErr = new BriefError('rate_limited', 'Rate limited');
+      expect(quotaErr.code).not.toBe(rateErr.code);
+    });
+
+    it('all error codes are valid BriefErrorCode values', () => {
+      const codes: BriefErrorCode[] = [
+        'offline',
+        'server_not_configured',
+        'service_unavailable',
+        'rate_limited',
+        'quota_exhausted',
+        'invalid_response',
+        'request_too_large',
+        'network_error',
+      ];
+      for (const code of codes) {
+        const err = new BriefError(code, 'test');
+        expect(err.code).toBe(code);
+      }
     });
   });
 });
