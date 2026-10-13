@@ -383,4 +383,78 @@ describe('Brief data preparation', () => {
       }
     });
   });
+
+  // ─── Zero-cost Local Brief mode ────────────────────────────────────
+
+  describe('Zero-cost Local Brief', () => {
+    it('local brief generation works while online (no network needed)', () => {
+      const data = makeBaseData();
+      const input = prepareBriefInput(data, 'inc-1')!;
+      // generateLocalBrief is synchronous — no network call involved
+      const brief = generateLocalBrief(input);
+      expect(brief.source).toBe('local');
+      expect(brief.situation).toContain('Building B — Power Outage');
+    });
+
+    it('local brief generation works while offline', () => {
+      const data = makeBaseData();
+      const input = prepareBriefInput(data, 'inc-1')!;
+      // Same function — works regardless of connection status
+      const brief = generateLocalBrief(input);
+      expect(brief.source).toBe('local');
+      expect(brief.completedItems).toContain('Check emergency lights');
+    });
+
+    it('local brief makes no API request (synchronous, no fetch)', () => {
+      const data = makeBaseData();
+      const input = prepareBriefInput(data, 'inc-1')!;
+      // generateLocalBrief is a pure function — it cannot make network calls
+      // Verify it returns immediately with valid data
+      const brief = generateLocalBrief(input);
+      expect(brief).toBeDefined();
+      expect(brief.generatedAt).toBeDefined();
+      expect(brief.source).toBe('local');
+    });
+
+    it('local brief reflects current incident state', () => {
+      const data = makeBaseData();
+      // Modify incident state
+      data.tasks[0].status = 'completed';
+      data.tasks[1].status = 'completed';
+      data.tasks[2].status = 'pending';
+      data.requests[0].fulfilled = true;
+
+      const input = prepareBriefInput(data, 'inc-1')!;
+      const brief = generateLocalBrief(input);
+
+      expect(brief.completedItems).toContain('Check emergency lights');
+      expect(brief.completedItems).toContain('Contact facilities');
+      expect(brief.outstandingItems).toContain('Check elevator status');
+      expect(brief.openRequests.some((r) => r.includes('Flashlight') && r.includes('fulfilled'))).toBe(true);
+    });
+
+    it('generating a local brief does not modify incident, tasks, requests or timeline', () => {
+      const data = makeBaseData();
+      const originalTasks = JSON.parse(JSON.stringify(data.tasks));
+      const originalIncidents = JSON.parse(JSON.stringify(data.incidents));
+      const originalRequests = JSON.parse(JSON.stringify(data.requests));
+      const originalTimeline = JSON.parse(JSON.stringify(data.timeline));
+
+      const input = prepareBriefInput(data, 'inc-1')!;
+      generateLocalBrief(input);
+
+      expect(data.tasks).toEqual(originalTasks);
+      expect(data.incidents).toEqual(originalIncidents);
+      expect(data.requests).toEqual(originalRequests);
+      expect(data.timeline).toEqual(originalTimeline);
+    });
+
+    it('local brief never claims to be AI-generated', () => {
+      const data = makeBaseData();
+      const input = prepareBriefInput(data, 'inc-1')!;
+      const brief = generateLocalBrief(input);
+      expect(brief.source).not.toBe('ai');
+      expect(brief.source).toBe('local');
+    });
+  });
 });

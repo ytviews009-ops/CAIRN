@@ -1,77 +1,35 @@
 import { useState, useCallback } from 'react';
-import { Sparkles, Loader2, Copy, Check, RefreshCw, X, AlertCircle, WifiOff, Lock, FileText } from 'lucide-react';
+import { Sparkles, Loader2, Copy, Check, RefreshCw, X, AlertCircle, FileText, Lock, CloudOff } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
 import {
   prepareBriefInput,
   generateLocalBrief,
-  fetchAIBrief,
-  validateBrief,
   formatBriefForClipboard,
-  BriefError,
   type IncidentBrief,
 } from '@/lib/brief';
 
-type BriefState =
-  | 'idle'
-  | 'consent'
-  | 'generating'
-  | 'ready'
-  | 'error'
-  | 'offline'
-  | 'local';
+type BriefState = 'idle' | 'generating' | 'local' | 'consent-ai';
 
 export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: string; incidentTitle: string }) {
-  const { data, connection } = useApp();
+  const { data } = useApp();
   const [state, setState] = useState<BriefState>('idle');
   const [brief, setBrief] = useState<IncidentBrief | null>(null);
-  const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const handleGenerate = useCallback(async () => {
+  const handleGenerateLocal = useCallback(() => {
     setState('generating');
-    setErrorMsg('');
 
     const input = prepareBriefInput(data, incidentId);
     if (!input) {
-      setState('error');
-      setErrorMsg('Incident data could not be prepared.');
+      setState('idle');
       return;
     }
 
-    // Offline — generate local brief
-    if (connection === 'offline') {
-      const local = generateLocalBrief(input);
-      setBrief(local);
-      setState('local');
-      return;
-    }
-
-    // Online — try AI
-    try {
-      const aiBrief = await fetchAIBrief(input);
-      setBrief(aiBrief);
-      setState('ready');
-    } catch (err) {
-      if (err instanceof BriefError) {
-        // For server_not_configured or network errors, offer local fallback
-        if (err.code === 'server_not_configured' || err.code === 'network_error') {
-          const local = generateLocalBrief(input);
-          setBrief(local);
-          setState('local');
-          setErrorMsg(err.message);
-          return;
-        }
-        setErrorMsg(err.message);
-      } else {
-        setErrorMsg('An unexpected error occurred.');
-      }
-
-      // Offer local fallback on any AI failure
-      const local = generateLocalBrief(input);
-      setBrief(local);
-      setState('local');
-    }
-  }, [data, incidentId, connection]);
+    // Synchronous — no network request, works online or offline
+    const local = generateLocalBrief(input);
+    setBrief(local);
+    setState('local');
+  }, [data, incidentId]);
 
   const handleCopy = useCallback(() => {
     if (!brief) return;
@@ -85,7 +43,6 @@ export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: 
   const handleClose = useCallback(() => {
     setState('idle');
     setBrief(null);
-    setErrorMsg('');
     setCopied(false);
   }, []);
 
@@ -95,61 +52,71 @@ export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: 
       <div className="bg-white rounded-2xl border border-gray-200/80 p-5">
         <div className="flex items-center gap-2 mb-3">
           <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-            <Sparkles size={16} className="text-gray-600" />
+            <FileText size={16} className="text-gray-600" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-gray-900">Cairn Intelligence</h3>
-            <p className="text-xs text-gray-400">Incident Brief</p>
+            <h3 className="text-sm font-semibold text-gray-900">Incident Brief</h3>
+            <p className="text-xs text-gray-400">On-device handover summary</p>
           </div>
         </div>
         <p className="text-sm text-gray-500 mb-4">
-          Generate a concise handover summary from this incident's recorded tasks, requests and timeline.
+          Generate a concise handover summary from this incident's recorded tasks, requests and timeline. No data leaves your device.
         </p>
-        <button
-          onClick={() => setState('consent')}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-all active:scale-[0.98]"
-        >
-          <Sparkles size={15} />
-          Generate Incident Brief
-        </button>
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button
+            onClick={handleGenerateLocal}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-all active:scale-[0.98]"
+          >
+            <FileText size={15} />
+            Generate Local Brief
+          </button>
+          <button
+            onClick={() => setState('consent-ai')}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-gray-200 text-gray-400 text-sm font-semibold cursor-not-allowed"
+            disabled
+          >
+            <Sparkles size={15} />
+            AI Brief (unavailable)
+          </button>
+        </div>
+        <p className="mt-3 text-xs text-gray-400">
+          AI-powered briefs require paid OpenAI API credits. Local briefs work without any API or network connection.
+        </p>
       </div>
     );
   }
 
-  // ─── Consent state ──────────────────────────────────────
-  if (state === 'consent') {
+  // ─── AI consent (preserved for future use, shows unavailable) ──
+  if (state === 'consent-ai') {
     return (
       <div className="bg-white rounded-2xl border border-gray-200/80 p-5">
         <div className="flex items-center gap-2 mb-3">
           <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center">
             <Lock size={16} className="text-blue-600" />
           </div>
-          <h3 className="text-sm font-semibold text-gray-900">Privacy Confirmation</h3>
+          <h3 className="text-sm font-semibold text-gray-900">AI Brief — Unavailable</h3>
         </div>
-        <p className="text-sm text-gray-600 mb-4">
-          To generate this AI brief, Cairn will send the selected incident's title, task statuses, requests and recent timeline entries to OpenAI. Do not include information you are not authorized to share.
-        </p>
+        <div className="flex items-start gap-2 mb-4">
+          <CloudOff size={16} className="text-gray-400 mt-0.5 shrink-0" />
+          <p className="text-sm text-gray-500">
+            AI-powered briefs require paid OpenAI API credits, which are not currently configured. You can still generate a Local Brief on this device at no cost.
+          </p>
+        </div>
         <div className="flex gap-3">
           <button
-            onClick={handleGenerate}
+            onClick={handleGenerateLocal}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-all active:scale-[0.98]"
           >
-            <Sparkles size={15} />
-            Generate AI Brief
+            <FileText size={15} />
+            Generate Local Brief
           </button>
           <button
             onClick={() => setState('idle')}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-gray-200 text-gray-900 text-sm font-semibold hover:bg-gray-50 transition-all"
           >
-            Cancel
+            Back
           </button>
         </div>
-        {connection === 'offline' && (
-          <p className="mt-3 text-xs text-amber-600 flex items-center gap-1.5">
-            <WifiOff size={13} />
-            You are offline — a local on-device brief will be generated instead.
-          </p>
-        )}
       </div>
     );
   }
@@ -166,25 +133,20 @@ export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: 
     );
   }
 
-  // ─── Ready / Local state ────────────────────────────────
-  if ((state === 'ready' || state === 'local') && brief) {
-    const isLocal = brief.source === 'local';
+  // ─── Local brief ready ──────────────────────────────────
+  if (state === 'local' && brief) {
     return (
       <div className="bg-white rounded-2xl border border-gray-200/80 overflow-hidden">
         {/* Header */}
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isLocal ? 'bg-gray-100' : 'bg-blue-50'}`}>
-              {isLocal ? <FileText size={16} className="text-gray-600" /> : <Sparkles size={16} className="text-blue-600" />}
+            <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+              <FileText size={16} className="text-gray-600" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-gray-900">
-                {isLocal ? 'Local Brief' : 'AI Incident Brief'}
-              </h3>
+              <h3 className="text-sm font-semibold text-gray-900">Local Brief</h3>
               <p className="text-xs text-gray-400">
-                {isLocal
-                  ? 'Generated on this device. No data was sent to an AI service.'
-                  : 'Generated by AI from recorded incident data.'}
+                Generated on this device. No data was sent to an AI service.
               </p>
             </div>
           </div>
@@ -195,16 +157,6 @@ export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: 
             <X size={16} />
           </button>
         </div>
-
-        {/* Error notice (for local fallback after AI failure) */}
-        {state === 'local' && errorMsg && (
-          <div className="px-5 py-2.5 bg-amber-50 border-b border-amber-100 flex items-center gap-2">
-            <AlertCircle size={14} className="text-amber-600 shrink-0" />
-            <p className="text-xs text-amber-700">
-              AI request failed — showing local brief instead. {errorMsg}
-            </p>
-          </div>
-        )}
 
         {/* Content */}
         <div className="px-5 py-4 space-y-4">
@@ -223,7 +175,7 @@ export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: 
           </span>
           <div className="flex items-center gap-2">
             <button
-              onClick={handleGenerate}
+              onClick={handleGenerateLocal}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-100 transition-colors"
             >
               <RefreshCw size={13} />
@@ -237,36 +189,6 @@ export function IncidentBriefPanel({ incidentId, incidentTitle }: { incidentId: 
               {copied ? 'Copied' : 'Copy Brief'}
             </button>
           </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ─── Error state ────────────────────────────────────────
-  if (state === 'error') {
-    return (
-      <div className="bg-white rounded-2xl border border-gray-200/80 p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-8 h-8 rounded-lg bg-red-50 flex items-center justify-center">
-            <AlertCircle size={16} className="text-red-600" />
-          </div>
-          <h3 className="text-sm font-semibold text-gray-900">Unable to Generate Brief</h3>
-        </div>
-        <p className="text-sm text-gray-500 mb-4">{errorMsg}</p>
-        <div className="flex gap-3">
-          <button
-            onClick={handleGenerate}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold hover:bg-gray-800 transition-all"
-          >
-            <RefreshCw size={15} />
-            Try Again
-          </button>
-          <button
-            onClick={handleClose}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-gray-200 text-gray-900 text-sm font-semibold hover:bg-gray-50 transition-all"
-          >
-            Close
-          </button>
         </div>
       </div>
     );
